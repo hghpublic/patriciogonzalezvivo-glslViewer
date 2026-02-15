@@ -418,6 +418,42 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    // Screenshot button functionality
+    const screenshotBtn = document.getElementById('screenshot-btn');
+    if (screenshotBtn) {
+        screenshotBtn.addEventListener('click', () => {
+
+            const canvas = document.getElementById('canvas');
+            if (!canvas) return;
+            
+            try {
+                // Convert canvas to blob
+                canvas.toBlob((blob) => {
+                    if (!blob) {
+                        console.error('Failed to create screenshot blob');
+                        return;
+                    }
+                    
+                    // Create download link
+                    const url = URL.createObjectURL(blob);
+                    const link = document.createElement('a');
+                    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+                    link.download = `glslviewer-screenshot-${timestamp}.png`;
+                    link.href = url;
+                    link.click();
+                    
+                    // Clean up
+                    setTimeout(() => URL.revokeObjectURL(url), 100);
+                    
+                    logToConsole('Screenshot saved');
+                }, 'image/png');
+            } catch (error) {
+                console.error('Error taking screenshot:', error);
+                logToConsole('Error taking screenshot: ' + error.message, true);
+            }
+        });
+    }
+
     // Use ResizeObserver to handle the CSS transition smoothly
     if (wrapper) {
         const resizeObserver = new ResizeObserver(() => {
