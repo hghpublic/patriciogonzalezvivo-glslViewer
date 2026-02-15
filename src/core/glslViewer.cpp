@@ -65,7 +65,7 @@ GlslViewer::GlslViewer():
 
     // Scene
     m_view2d(1.0), m_time_offset(0.0), 
-    m_camera_elevation(0.0), m_camera_azimuth(0.0), 
+    m_camera_elevation(0.0), m_camera_azimuth(0.0), m_camera_id("default"),
     m_error_screen(vera::SHOW_MAGENTA_SHADER), 
     m_change_viewport(true), m_update_buffers(true), m_initialized(false), 
 
@@ -951,7 +951,7 @@ void GlslViewer::commandsInit(CommandList &_commands ) {
 
     _commands.push_back(Command("camera", [&](const std::string& _line){ 
         if (_line == "camera") {
-            // TODO: print active camera name
+            std::cout << m_camera_id << std::endl;
             return false;
         }
         else {
@@ -968,6 +968,7 @@ void GlslViewer::commandsInit(CommandList &_commands ) {
                     }
                 }
                 else if (uniforms.cameras.find(values[1]) != uniforms.cameras.end()) {
+                    m_camera_id = values[1];
                     uniforms.activeCamera = uniforms.cameras[ values[1] ];
                     
                     // If this camera doesn't have a properly set target yet, calculate it

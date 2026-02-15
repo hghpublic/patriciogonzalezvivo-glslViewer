@@ -33,7 +33,7 @@ void main() {
 
 const cmds_state = ['plot', 'textures', 'buffers', 'floor', 'cubemap', 'axis', 'grid', 'bboxes', 'fullscreen'];
 const cmds_plot_modes = ['off', 'fps', 'rgb', 'luma'];
-const cmds_camera = ['camera_position', 'camera_look_at'];
+const cmds_camera = ['camera_position', 'camera_look_at','camera'];
 const cmds_listen = ['plane', 'pcl_plane', 'sphere', 'pcl_sphere', 'icosphere', 'cylinder'];
 let cmds_history = [];
 
@@ -322,7 +322,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
             
-            if (answer && answer !== 'off') {
+            if (answer) {
                 results.push(cmd + ',' + answer);
             }
         });

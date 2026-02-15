@@ -156,6 +156,7 @@ protected:
     glm::vec3                       m_camera_target;
     float                           m_camera_azimuth;
     float                           m_camera_elevation;
+    std::string                     m_camera_id; 
 
     vera::ShaderErrorResolve        m_error_screen;
     bool                            m_change_viewport;
