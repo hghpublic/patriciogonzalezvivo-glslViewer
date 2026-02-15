@@ -642,17 +642,35 @@ bool Uniforms::addCameras( const std::string& _filename ) {
             size_t id = vera::toInt(params[0]);
             std::string model = params[1];
 
-            // Fx,Fy,Ox,Oy,S,Qw,Qx,Qy,Qz,Tx,Ty,Tz,FILENAME
-            float Fx = vera::toFloat(params[2]);  // focal length x
-            float Fy = vera::toFloat(params[3]);  // focal length y
-            float Ox = vera::toFloat(params[4]);  // principal point x
-            float Oy = vera::toFloat(params[5]);  // principal point y
-            // glm::mat4 projection = glm::mat4(
-            //     2.0f * Fx, 0.0f, 0.0f, 0.0f,
-            //     0.0f, 2.0f * Fy, 0.0f, 0.0f,
-            //     2.0f * Ox - 1.0f, 2.0f * Oy - 1.0f, -1.0f, -1.0f,
-            //     0.0f, 0.0f, -0.1f, 0.0f
-            // );
+            // Determine column offset based on model type and param count
+            // SIMPLE_PINHOLE: id,MODEL,F,Ox,Oy,S,Qw,Qx,Qy,Qz,Tx,Ty,Tz,FILENAME (14 cols)
+            // PINHOLE with S: id,MODEL,Fx,Fy,Ox,Oy,S,Qw,Qx,Qy,Qz,Tx,Ty,Tz,FILENAME (15 cols)
+            // PINHOLE no S: id,MODEL,Fx,Fy,Ox,Oy,Qw,Qx,Qy,Qz,Tx,Ty,Tz,FILENAME (14 cols)
+            int quat_offset = 0;
+            float Fx, Fy, Ox, Oy;
+            
+            if (model == "SIMPLE_PINHOLE") {
+                Fx = Fy = vera::toFloat(params[2]);  // Single focal length
+                Ox = vera::toFloat(params[3]);
+                Oy = vera::toFloat(params[4]);
+                quat_offset = 6;  // S at index 5, Qw starts at 6
+            }
+            else if (model == "PINHOLE") {
+                Fx = vera::toFloat(params[2]);
+                Fy = vera::toFloat(params[3]);
+                Ox = vera::toFloat(params[4]);
+                Oy = vera::toFloat(params[5]);
+                // Check if S column exists (15+ params) or not (14 params)
+                quat_offset = (params.size() >= 15) ? 7 : 6;
+            }
+            else {
+                // Default to PINHOLE format with S
+                Fx = vera::toFloat(params[2]);
+                Fy = vera::toFloat(params[3]);
+                Ox = vera::toFloat(params[4]);
+                Oy = vera::toFloat(params[5]);
+                quat_offset = 7;
+            }
             
             glm::mat4 projection = glm::mat4(
                 -2.0f*Fx,           0.0f,           0.0f,       0.0f,
@@ -662,30 +680,53 @@ bool Uniforms::addCameras( const std::string& _filename ) {
             );
 
             // Quaternion rotation
-            float Qw = vera::toFloat(params[6]);
-            float Qx = vera::toFloat(params[7]);
-            float Qy = vera::toFloat(params[8]);
-            float Qz = vera::toFloat(params[9]);
-            glm::quat Q = glm::quat(Qx, Qy, Qz, Qw);
+            float Qw = vera::toFloat(params[quat_offset]);
+            float Qx = vera::toFloat(params[quat_offset + 1]);
+            float Qy = vera::toFloat(params[quat_offset + 2]);
+            float Qz = vera::toFloat(params[quat_offset + 3]);
+            glm::quat Q = glm::quat(Qw, Qx, Qy, Qz);  // GLM uses (w,x,y,z) order
             glm::mat4 R = glm::mat4_cast(Q);
+            
             // Translation
-            float Tx = vera::toFloat(params[10]);
-            float Ty = vera::toFloat(params[11]);
-            float Tz = vera::toFloat(params[12]);
-            glm::mat4 T = glm::mat4(
-                1.0f, 0.0f, 0.0f, 0.0f,
-                0.0f,-1.0f, 0.0f, 0.0f,
-                0.0f, 0.0f,-1.0f, 0.0f,
-                Tx,   Ty,   Tz,   1.0f
+            float Tx = vera::toFloat(params[quat_offset + 4]);
+            float Ty = vera::toFloat(params[quat_offset + 5]);
+            float Tz = vera::toFloat(params[quat_offset + 6]);
+            
+            // OpenCV/COLMAP stores world-to-camera transform [R|t]
+            // Build world-to-camera matrix
+            glm::mat4 world_to_cam = glm::mat4(
+                R[0][0], R[0][1], R[0][2], 0.0f,
+                R[1][0], R[1][1], R[1][2], 0.0f,
+                R[2][0], R[2][1], R[2][2], 0.0f,
+                Tx,      Ty,      Tz,      1.0f
+            );
+            
+            // Invert to get camera-to-world transform
+            glm::mat4 cam_to_world = glm::inverse(world_to_cam);
+            
+            // Convert from OpenCV/COLMAP coordinate system to OpenGL
+            // OpenCV: X right, Y down, Z forward
+            // OpenGL: X right, Y up, Z backward
+            glm::mat4 flip = glm::mat4(
+                1.0f,  0.0f,  0.0f, 0.0f,
+                0.0f, -1.0f,  0.0f, 0.0f,
+                0.0f,  0.0f, -1.0f, 0.0f,
+                0.0f,  0.0f,  0.0f, 1.0f
             );
             
             // Image filename (optional)
-            std::string image_filename = (params.size() > 12) ? params[13] : "";
+            std::string image_filename = (params.size() > quat_offset + 6) ? params[quat_offset + 7] : "";
 
             vera::Camera* camera = new vera::Camera();
-            camera->setTransformMatrix(R * T);
+            camera->setTransformMatrix(flip * cam_to_world);
             camera->setProjection(projection);
-            camera->bFlipped = true;
+            camera->bFlipped = false;
+            
+            // Set target in front of camera based on its forward direction
+            // After applying the coordinate flip, camera looks down -Z axis
+            glm::vec3 cam_pos = glm::vec3(camera->getTransformMatrix()[3]);
+            glm::vec3 cam_forward = -glm::vec3(camera->getTransformMatrix()[2]); // -Z axis in camera space
+            camera->setTarget(cam_pos + cam_forward * 1.0f); // Set target 1 unit in front
             
             // Adding to VERA scene cameras
             vera::addCamera( vera::toString(counter), camera );
