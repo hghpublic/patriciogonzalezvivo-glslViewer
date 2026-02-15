@@ -583,7 +583,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     let currentGistId = null;
     let gistHistory = [];
-    let currentGistAuthors = { first: null, last: null };
+    let currentGistAuthors = { first: null, firstGistId: null, last: null, lastGistId: null };
     
     // Load gist history from localStorage
     try {
@@ -639,22 +639,25 @@ document.addEventListener('DOMContentLoaded', () => {
 
         let html = '';
         
-        // Last author (current author)
+        // Last author (current loaded gist author)
         if (currentGistAuthors.last) {
             const lastAuthor = currentGistAuthors.last;
             const lastUrl = lastAuthor.blog || lastAuthor.html_url;
-            html += `By <a href="${lastUrl}" target="_blank" class="author-link">${lastAuthor.name}</a> `;
+            html += `By <a href="${lastUrl}" target="_blank" class="author-link">${lastAuthor.name}`;
             html += `<img src="${lastAuthor.avatar_url}" class="author-avatar" alt="${lastAuthor.name}" />`;
+            html += `</a>`;
         }
 
-        // First author (original author)
-        if (currentGistAuthors.first && currentGistAuthors.first.login !== currentGistAuthors.last?.login) {
-            html += ',<br />based on ';
+        // First author (original gist in history chain)
+        if (currentGistAuthors.first && currentGistAuthors.firstGistId &&
+            currentGistAuthors.firstGistId !== currentGistAuthors.lastGistId) {
             const firstAuthor = currentGistAuthors.first;
             const firstUrl = firstAuthor.blog || firstAuthor.html_url;
-            html += `<a href="${firstUrl}" target="_blank" class="author-link">${firstAuthor.name}</a> `;
+            const firstGistUrl = `${window.location.origin}${window.location.pathname}?gist=${currentGistAuthors.firstGistId}`;
+            html += `,<br />based on <a href="${firstGistUrl}" target="_blank" class="author-link">this shader </a>`;
+            html += `by <a href="${firstUrl}" target="_blank" class="author-link">`;
             html += `<img src="${firstAuthor.avatar_url}" class="author-avatar" alt="${firstAuthor.name}" />`;
-            html += ` <a href="https://gist.github.com/${currentGistId}" target="_blank" class="gist-link">[gist]</a>`;
+            html += `</a>`;
         }
 
         infoDiv.innerHTML = html;
@@ -826,16 +829,19 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                     
                     // Determine first and last authors for attribution
-                    const historyForGist = gistHistory.filter(h => h.gistId === id);
                     let firstOwner = gistHistory.length > 0 && gistHistory[0].owner ? gistHistory[0].owner : currentGistOwnerInfo.owner;
+                    let firstGistId = gistHistory.length > 0 && gistHistory[0].gistId ? gistHistory[0].gistId : id;
                     let lastOwner = currentGistOwnerInfo.owner;
+                    let lastGistId = id;
                     
                     // Fetch full user info for first and last authors
                     if (lastOwner) {
                         currentGistAuthors.last = await fetchGitHubUserInfo(lastOwner.login);
+                        currentGistAuthors.lastGistId = lastGistId;
                     }
                     if (firstOwner && firstOwner.login) {
                         currentGistAuthors.first = await fetchGitHubUserInfo(firstOwner.login);
+                        currentGistAuthors.firstGistId = firstGistId;
                     }
                     
                     // Update author info display
