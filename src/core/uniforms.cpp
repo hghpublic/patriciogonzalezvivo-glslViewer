@@ -644,8 +644,7 @@ bool Uniforms::addCameras( const std::string& _filename ) {
 
             // Determine column offset based on model type and param count
             // SIMPLE_PINHOLE: id,MODEL,F,Ox,Oy,S,Qw,Qx,Qy,Qz,Tx,Ty,Tz,FILENAME (14 cols)
-            // PINHOLE with S: id,MODEL,Fx,Fy,Ox,Oy,S,Qw,Qx,Qy,Qz,Tx,Ty,Tz,FILENAME (15 cols)
-            // PINHOLE no S: id,MODEL,Fx,Fy,Ox,Oy,Qw,Qx,Qy,Qz,Tx,Ty,Tz,FILENAME (14 cols)
+            // PINHOLE: id,MODEL,Fx,Fy,Ox,Oy,Qw,Qx,Qy,Qz,Tx,Ty,Tz,FILENAME (14 cols)
             int quat_offset = 0;
             float Fx, Fy, Ox, Oy;
             
@@ -661,22 +660,18 @@ bool Uniforms::addCameras( const std::string& _filename ) {
                 Ox = vera::toFloat(params[4]);
                 Oy = vera::toFloat(params[5]);
                 // Check if S column exists (15+ params) or not (14 params)
-                quat_offset = (params.size() >= 15) ? 7 : 6;
+                quat_offset = 6;
             }
             else {
-                // Default to PINHOLE format with S
-                Fx = vera::toFloat(params[2]);
-                Fy = vera::toFloat(params[3]);
-                Ox = vera::toFloat(params[4]);
-                Oy = vera::toFloat(params[5]);
-                quat_offset = 7;
+                std::cerr << "Unsupported camera model: " << model << " in line: " << line << std::endl;
+                continue;
             }
             
             glm::mat4 projection = glm::mat4(
                 -2.0f*Fx,           0.0f,           0.0f,       0.0f,
                 0.0f,              -2.0f*Fy,        0.0f,       0.0f,
                 2.0f*Ox-1.0f,       2.0f*Oy-1.0f,  -1.0f,      -1.0f,
-                0.0f,               0.0f,          -0.1f,      0.0f
+                0.0f,               0.0f,          -0.1f,       0.0f
             );
 
             // Quaternion rotation
@@ -708,25 +703,17 @@ bool Uniforms::addCameras( const std::string& _filename ) {
             // OpenCV: X right, Y down, Z forward (camera looks down +Z)
             // OpenGL: X right, Y up, Z backward (camera looks down -Z)
             glm::mat4 flip = glm::mat4(
-                1.0f,  0.0f,  0.0f, 0.0f,
-                0.0f, -1.0f,  0.0f, 0.0f,
+               -1.0f,  0.0f,  0.0f, 0.0f,
+                0.0f,  1.0f,  0.0f, 0.0f,
                 0.0f,  0.0f, -1.0f, 0.0f,
                 0.0f,  0.0f,  0.0f, 1.0f
-            );
-            
-            // 180-degree rotation around Y-axis
-            glm::mat4 rot180 = glm::mat4(
-                -1.0f,  0.0f,  0.0f, 0.0f,
-                 0.0f,  1.0f,  0.0f, 0.0f,
-                 0.0f,  0.0f, -1.0f, 0.0f,
-                 0.0f,  0.0f,  0.0f, 1.0f
             );
             
             // Image filename (optional)
             std::string image_filename = (params.size() > quat_offset + 6) ? params[quat_offset + 7] : "";
 
             vera::Camera* camera = new vera::Camera();
-            camera->setTransformMatrix(rot180 * flip * cam_to_world * flip);
+            camera->setTransformMatrix(cam_to_world * flip);
             camera->setProjection(projection);
             camera->bFlipped = false;
             
