@@ -1,4 +1,11 @@
+// Main application entry point
+// Coordinates all modules and initializes the application
+
 import './wasm-loader.js';
+import { GitHubIntegration } from './github.js';
+import { GlslViewerIntegration } from './glslviewer.js';
+import { EditorManager } from './editor.js';
+import { UIManager, getQueryVariable } from './ui.js';
 
 const defaultFragment = `#ifdef GL_ES
 precision mediump float;
@@ -31,1260 +38,219 @@ void main() {
 }
 `;
 
-const cmds_state = ['plot', 'textures', 'buffers', 'floor', 'cubemap', 'axis', 'grid', 'bboxes', 'fullscreen'];
-const cmds_plot_modes = ['off', 'fps', 'rgb', 'luma'];
-const cmds_camera = ['camera_position', 'camera_look_at','camera'];
-const cmds_listen = ['plane', 'pcl_plane', 'sphere', 'pcl_sphere', 'icosphere', 'cylinder'];
-let cmds_history = [];
-
-function getJSON(url, callback) {
-    var xhr = new XMLHttpRequest();
-    xhr.open('GET', url, true);
-    xhr.responseType = 'json';
-    xhr.onload = function() {
-      var status = xhr.status;
-      if (status === 200) {
-        callback(null, xhr.response);
-      } else {
-        callback(status, xhr.response);
-      }
-    };
-    xhr.send();
-};
-
 document.addEventListener('DOMContentLoaded', () => {
-    // State
-    let activeTab = 'frag';
-    let content = {
+    // Initialize UI Manager
+    const ui = new UIManager();
+    ui.showLoader("Loading...");
+    
+    // Initialize glslViewer Integration
+    const glslviewer = new GlslViewerIntegration((msg, isError) => {
+        ui.logToConsole(msg, isError);
+    });
+    
+    // Initialize Editor
+    const editorManager = new EditorManager('editor-container', {
         frag: defaultFragment,
         vert: defaultVertex
-    };
-    let externalAssets = {};
-    const loader = document.getElementById('loader');
-    const loaderContent = loader ? loader.querySelector('.loader-content') : null;
-    let loaderCount = 0;
-    const showLoader = (text) => {
-        loaderCount++;
-        if (text && loaderContent) loaderContent.innerText = text;
-        if (loader && loaderCount > 0) loader.classList.add('visible');
-    };
-    const updateLoader = (text) => {
-        if (text && loaderContent) loaderContent.innerText = text;
-    };
-    const hideLoader = () => {
-        loaderCount--;
-        if (loader && loaderCount <= 0) {
-            loader.classList.remove('visible');
-            loaderCount = 0;
-            if (loaderContent) loaderContent.innerText = "Loading...";
-        }
-    };
-    window.glslViewerLoader = { show: showLoader, hide: hideLoader, update: updateLoader };
-    
-    // DeBounce timeout
-    let updateTimeout = null;
-
-    // Editor Setup
-    const editorContainer = document.getElementById('editor-container');
-    const editor = CodeMirror(editorContainer, {
-        value: content.frag,
-        mode: 'x-shader/x-fragment',
-        theme: 'monokai',
-        lineNumbers: true,
-        matchBrackets: true,
-        keyMap: 'sublime',
-        tabSize: 4,
-        indentUnit: 4,
-        extraKeys: {
-            "Cmd-/": "toggleComment",
-            "Ctrl-/": "toggleComment",
-            "Alt-Up": "swapLineUp",
-            "Alt-Down": "swapLineDown"
-        }
     });
-    editor.setSize(null, "100%");
-
-    // Lygia Autocomplete
-    let lygia_glob = null;
-    let lygia_fetching = false;
-    editor.on('inputRead', (cm, change) => {
-        let cur = cm.getCursor();
-        let line = cm.getLine(cur.line);
-        let trimmedLine = line.trim();
-          
-        if (trimmedLine.startsWith('#include')) {
-            let path = line.substring(10);
-            if (lygia_glob === null) {
-            getJSON('https://lygia.xyz/glsl.json', (err, data) => {
-                if (err === null) {
-                lygia_glob = data;
-                }
-            });
-            }
-            console.log('autocomplete for', path);
-
-            let result = []
-
-            if (lygia_glob !== null) {
-                lygia_glob.forEach((w) => {
-                    if (w.startsWith(path)) {
-                        result.push('#include "' + w + '"');
-                    }
-                });
-                result.sort();
-            }
-
-            if (result.length > 0) {
-                CodeMirror.showHint(cm, () => {
-                    let start = line.indexOf('#include');
-                    let end = cur.ch;
-                    if (line.length > end && line[end] === '"') {
-                        end++;
-                    }
-
-                    let rta = {
-                        list: result, 
-                        from: CodeMirror.Pos(cur.line, start),
-                        to: CodeMirror.Pos(cur.line, end)
-                    };
-                    
-                    console.log(rta);
-                    return rta;
-                }, {completeSingle: true, alignWithWord: true});
-            }
-        }
+    
+    // Initialize GitHub Integration
+    const github = new GitHubIntegration();
+    
+    // Setup UI components
+    ui.setupConsoleEvents();
+    ui.setupCanvasFocus('editor-container');
+    ui.setupTabSwitching(editorManager);
+    ui.setupResizeObserver();
+    ui.setupScreenshotButton();
+    ui.setupViewDropdown(glslviewer);
+    
+    // Setup error highlighting
+    editorManager.setupErrorHighlighting();
+    
+    // Handle fullscreen with glslviewer commands
+    ui.setupResizeButton((isFullscreen) => {
+        // The UI already handles visual changes, just sync with glslviewer if needed
     });
-
-    // Tabs logic
-    const tabFrag = document.querySelector('.tab[data-type="frag"]');
-    const tabVert = document.querySelector('.tab[data-type="vert"]');
-
-    function switchTab(type) {
-        if (type === activeTab) return;
-        
-        // Turn off fullscreen if it's on (user wants to edit code)
-        if (getFullscreen()) {
-            setFullscreen(false);
-        }
-        
-        // Flush pending updates
-        if (updateTimeout) {
-            clearTimeout(updateTimeout);
-            updateShader();
-        }
-
-        // Save current content
-        content[activeTab] = editor.getValue();
-        
-        // Switch state
-        activeTab = type;
-        
-        // Update UI
-        if (type === 'frag') {
-            if (tabFrag) tabFrag.classList.add('active');
-            if (tabVert) tabVert.classList.remove('active');
-            editor.setOption('mode', 'x-shader/x-fragment');
-        } else {
-            if (tabFrag) tabFrag.classList.remove('active');
-            if (tabVert) tabVert.classList.add('active');
-            editor.setOption('mode', 'x-shader/x-vertex');
-        }
-        
-        // Set new content
-        editor.setValue(content[activeTab]);
-    }
-
-    if (tabFrag) {
-        tabFrag.addEventListener('click', () => switchTab('frag'));
-    }
-    if (tabVert) {
-        tabVert.style.display = 'inline-block';
-        tabVert.addEventListener('click', () => switchTab('vert'));
-    }
-
-    // Canvas focus management
-    const canvas = document.getElementById('canvas');
-    const wrapper = document.getElementById('wrapper');
     
-    // Blur canvas when clicking on editor or console
-    if (editorContainer) {
-        editorContainer.addEventListener('mousedown', () => {
-            if (canvas) canvas.blur();
-        });
-    }
-
-    // Focus canvas when mouse is over it or wrapper
-    if (wrapper && canvas) {
-        wrapper.addEventListener('mouseenter', () => {
-            canvas.focus();
-        });
-        wrapper.addEventListener('mouseleave', () => {
-            if (document.activeElement === canvas) {
-                canvas.blur();
-            }
-        });
-    }
-
-    // Stop keyboard events from propagating to the module when in editor/console
-    function stopPropagation(e) {
-        e.stopPropagation();
-    }
-
-    if (editorContainer) {
-        editorContainer.addEventListener('keydown', stopPropagation);
-        editorContainer.addEventListener('keypress', stopPropagation);
-        editorContainer.addEventListener('keyup', stopPropagation);
-    }
-
-    const consoleInput = document.getElementById('console-input');
-    if (consoleInput) {
-        consoleInput.addEventListener('keydown', stopPropagation);
-        consoleInput.addEventListener('keypress', stopPropagation);
-        consoleInput.addEventListener('keyup', stopPropagation);
-    }
-
-    // send command
-    const getFullscreen = function() {
-        return wrapper && wrapper.classList.contains('fullscreen');
-    }
-    const setFullscreen = function(isFullscreen) {
-        if (wrapper) {
-            if (isFullscreen) {
-                wrapper.classList.add('fullscreen');
-                wrapper.classList.remove('windowed');
-                document.body.classList.remove('windowed-mode');
-                wrapper.style.transform = "none";
-                if (editorContainer) editorContainer.style.display = 'none';
-                const consoleOutput = document.getElementById('console-output');
-                if (consoleOutput && consoleOutput.parentElement) 
-                    consoleOutput.parentElement.style.display = 'none';
-            } else {
-                wrapper.classList.remove('fullscreen');
-                wrapper.classList.add('windowed');
-                document.body.classList.add('windowed-mode');
-                if (editorContainer) editorContainer.style.display = 'block';
-                const consoleOutput = document.getElementById('console-output');
-                if (consoleOutput && consoleOutput.parentElement) 
-                    consoleOutput.parentElement.style.display = 'flex';
-            }
-        }
-    };
-
-    const sendCommand = function(cmd) {
-        // log command if it starts with any of the cmds_listen
-        if (cmds_listen.some(c => cmd.startsWith(c))) {
-            console.log('Command added to history:', cmd);
-            cmds_history.push(cmd);
-        }
-
-        logToConsole('> ' + cmd);
-        if (cmd === 'fullscreen,on') {
-            setFullscreen(true);
-            return 'on';
-        } else if (cmd === 'fullscreen,off') {
-            setFullscreen(false);
-            return 'off';
-        }
-        else if (cmd === 'fullscreen,toggle') {
-            setFullscreen(!getFullscreen());
-            return getFullscreen() ? 'on' : 'off';
-        }
-        else if (cmd === 'fullscreen') {
-            let state = getFullscreen() ? 'on' : 'off';
-            logToConsole(state);
-            return state;
-        }
-        if (window.Module && window.Module.ccall) {
-            try {
-                window.Module.ccall('command', null, ['string'], [cmd]);
-            } catch(err) {
-                logToConsole('Error sending command: ' + err, true);
-            }
-        } else {
-            logToConsole('Module not ready.', true);
-        }
-    };
-
-    const getRetainedState = function() {
-        let results = [...cmds_history];
-
-        // merge cmds_state and cmds_camera into a single loop based on commandsToRetainState
-        const cmds_to_check = [...new Set([...cmds_state, ...cmds_camera])];
-        cmds_to_check.forEach((cmd) => {
-            let answer = null;
-            if (cmd === 'fullscreen') {
-                answer = getFullscreen() ? 'on' : 'off';
-            } else if (window.Module && window.Module.ccall) {
-                try {
-                    answer = window.Module.ccall('query', 'string', ['string'], [cmd]);
-                } catch(err) {
-                    console.error('Error getting retained state for ' + cmd + ': ' + err);
-                }
-            }
-            
-            if (answer) {
-                results.push(cmd + ',' + answer);
-            }
-        });
-
-        // remove duplicates while preserving order
-        results = [...new Set(results)];
-    
-        return results;
-    };
-
-    window.getRetainedState = getRetainedState;
-    window.getGistHistory = () => gistHistory;
-
-    const setFrag = function(code) {
-        if (window.Module && window.Module.ccall) {
-            try {
-                window.Module.ccall('setFrag', null, ['string'], [code]);
-            } catch (e) {
-                console.error("Error setting fragment shader:", e);
-            }
-        }
-    };
-
-    const setVert = function(code) {
-        if (window.Module && window.Module.ccall) {
-            try {
-                window.Module.ccall('setVert', null, ['string'], [code]);
-            } catch (e) {
-                console.error("Error setting vertex shader:", e);
-            }
-        }
-    };
-
-    // Update Shader function
-    function updateShader() {
-
-        const code = editor.getValue();
-        // Update stored content
-        content[activeTab] = code;
-
+    // Update shader function
+    const updateShader = () => {
+        const code = editorManager.getValue();
+        const activeTab = editorManager.getActiveTab();
+        
         if (activeTab === 'frag') {
-            setFrag(code);
+            glslviewer.setFrag(code);
         } else if (activeTab === 'vert') {
-            setVert(code);
+            glslviewer.setVert(code);
         }
-    }
-
-    // Fetch Shaders from Backend
-    const fetchShadersFromBackend = function() {
-        if (window.Module && window.Module.ccall) {
-            try {
-                 const cFrag = window.Module.ccall('getDefaultSceneFrag', 'string', [], []);
-                 const cVert = window.Module.ccall('getDefaultSceneVert', 'string', [], []);
-
-                 if (cFrag && cFrag.length > 0) content.frag = cFrag;
-                 if (cVert && cVert.length > 0) content.vert = cVert;
-                 
-                 if (editor.getValue() !== content[activeTab]) {
-                    editor.setValue(content[activeTab]);
-                 }
-            } catch(e) {
-                 console.log("Could not fetch shaders: " + e);
-            }
-        }
-    }
-
-    // Wait for Module to be ready
-    const checkModule = setInterval(() => {
-        if (window.Module && window.module_loaded) {
-            clearInterval(checkModule);
-            console.log("Module loaded, sending initial shader.");
-            
-            // Ensure loader is hidden now that module is ready
-            hideLoader();
-
-            const gistId = getQueryVariable('gist');
-            if (gistId) {
-                loadGist(gistId);
-            } else {
-                updateShader();
-            }
-        }
-    }, 500);
-
-    const btn = document.getElementById('resize-btn');
-    if (btn && wrapper) {
-        wrapper.classList.remove('fullscreen');
-        wrapper.classList.add('windowed');
-        document.body.classList.add('windowed-mode');
-
-        btn.addEventListener('click', () => {
-            setFullscreen(!getFullscreen());
-        });
-    }
-
-    // Screenshot button functionality
-    const screenshotBtn = document.getElementById('screenshot-btn');
-    if (screenshotBtn) {
-        screenshotBtn.addEventListener('click', () => {
-
-            const canvas = document.getElementById('canvas');
-            if (!canvas) return;
-            
-            try {
-                // Convert canvas to blob
-                canvas.toBlob((blob) => {
-                    if (!blob) {
-                        console.error('Failed to create screenshot blob');
-                        return;
-                    }
-                    
-                    // Create download link
-                    const url = URL.createObjectURL(blob);
-                    const link = document.createElement('a');
-                    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
-                    link.download = `glslviewer-screenshot-${timestamp}.png`;
-                    link.href = url;
-                    link.click();
-                    
-                    // Clean up
-                    setTimeout(() => URL.revokeObjectURL(url), 100);
-                    
-                    logToConsole('Screenshot saved');
-                }, 'image/png');
-            } catch (error) {
-                console.error('Error taking screenshot:', error);
-                logToConsole('Error taking screenshot: ' + error.message, true);
-            }
-        });
-    }
-
-    // Use ResizeObserver to handle the CSS transition smoothly
-    if (wrapper) {
-        const resizeObserver = new ResizeObserver(() => {
-            window.dispatchEvent(new Event('resize'));
-        });
-        resizeObserver.observe(wrapper);
-    }
-
-    // --- Console & Error Handling ---
-    const consoleOutput = document.getElementById('console-output');
-    function logToConsole(text, isError = false) {
-        if (!consoleOutput) return;
-        const msg = document.createElement('div');
-        msg.textContent = text;
-        if (isError) msg.style.color = '#ff5555';
-        consoleOutput.appendChild(msg);
-        consoleOutput.scrollTop = consoleOutput.scrollHeight;
-    }
-
-    window.addEventListener('wasm-stdout', (e) => {
-        logToConsole(e.detail, false);
-    });
-
-    window.addEventListener('wasm-stderr', (e) => {
-        const text = e.detail;
-        logToConsole(text, true);
-
-        // Regex to match GLSL errors
-        const errorRegex = /^0:(\d+):(.*)$/;
-        const match = text.match(errorRegex);
-        
-        if (match) {
-            const line = parseInt(match[1], 10);
-            const cmLine = line - 1; 
-            
-            if (editor) {
-               if (cmLine >= 0 && cmLine < editor.lineCount()) {
-                   editor.addLineClass(cmLine, 'background', 'error-line');
-               }
-            }
-        }
-    });
-
-    editor.on('change', () => {
-        editor.eachLine((lineHandle) => {
-             editor.removeLineClass(lineHandle, 'background', 'error-line');
-        });
-
-        // Clear existing timeout
-        if (updateTimeout) clearTimeout(updateTimeout);
-
-        // Set new timeout using stored content to detect changes
-        updateTimeout = setTimeout(() => {
-            const currentCode = editor.getValue();
-            if (currentCode !== content[activeTab]) {
-                updateShader();
-            }
-            updateTimeout = null;
-        }, 300);
-    });
-
-    // Console Input
-    const consoleDiv = document.getElementById('console');
-    if (consoleDiv && consoleInput) {
-        consoleDiv.addEventListener('mousedown', () => {
-            if (canvas) canvas.blur();
-        });
-
-        consoleInput.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') {
-                const cmd = consoleInput.value.trim();
-                if (cmd) {
-                    sendCommand(cmd);
-                    consoleInput.value = '';
-                }
-            }
-        });
-    }
-    
-    // --- GitHub Integration ---
-    function getQueryVariable(variable) {
-        var query = window.location.search.substring(1);
-        var vars = query.split('&');
-        for (var i = 0; i < vars.length; i++) {
-            var pair = vars[i].split('=');
-            if (decodeURIComponent(pair[0]) == variable) {
-                return decodeURIComponent(pair[1]);
-            }
-        }
-        return null;
-    }
-
-    const newBtn = document.getElementById('new-btn');
-    const loginBtn = document.getElementById('login-btn');
-    const saveBtn = document.getElementById('save-btn');
-    const openBtn = document.getElementById('open-btn');
-    const viewBtn = document.getElementById('view-btn');
-    const viewDropdown = document.getElementById('view-dropdown');
-    let githubToken = localStorage.getItem('github_token');
-    let githubUser = null;
-
-    function updateGithubUI() {
-        if (githubUser) {
-            loginBtn.textContent = 'Log out (' + githubUser + ')';
-            saveBtn.style.display = 'block';
-        } else {
-            loginBtn.textContent = 'Login';
-            saveBtn.style.display = 'none';
-        }
-    }
-
-    function checkGithubToken() {
-        if (githubToken) {
-            fetch('https://api.github.com/user', {
-                headers: { 'Authorization': 'token ' + githubToken }
-            })
-            .then(response => {
-                if (response.ok) return response.json();
-                throw new Error('Invalid token');
-            })
-            .then(data => {
-                githubUser = data.login;
-                updateGithubUI();
-            })
-            .catch(err => {
-                console.warn('GitHub token invalid:', err);
-                logoutGithub();
-            });
-        } else {
-            updateGithubUI();
-        }
-    }
-
-    function loginGithub() {
-        if (githubUser) {
-            // Logout
-            logoutGithub();
-        } else {
-            const token = prompt('Please enter your GitHub Personal Access Token:');
-            if (token) {
-                githubToken = token;
-                localStorage.setItem('github_token', token);
-                checkGithubToken();
-            }
-        }
-    }
-
-    function logoutGithub() {
-        githubToken = null;
-        githubUser = null;
-        localStorage.removeItem('github_token');
-        updateGithubUI();
-    }
-
-    function openGist() {
-        const id = prompt('Please enter Gist ID or URL:');
-        if (id) {
-            // Extract ID if full URL
-            const gistId = id.split('/').pop();
-            window.location.search = '?gist=' + gistId;
-        }
-    }
-
-    let currentGistId = null;
-    let gistHistory = [];
-    let currentGistAuthors = { first: null, firstGistId: null, last: null, lastGistId: null };
-    
-    // Load gist history from localStorage
-    try {
-        const savedHistory = localStorage.getItem('gist_history');
-        if (savedHistory) {
-            gistHistory = JSON.parse(savedHistory);
-            console.log('Loaded gist history from localStorage:', gistHistory);
-        }
-    } catch (e) {
-        console.error('Error loading gist history:', e);
-    }
-
-    // Function to fetch GitHub user details (name, website, avatar)
-    async function fetchGitHubUserInfo(usernameOrId) {
-        try {
-            let url;
-            // Check if it's a numeric ID or username
-            if (typeof usernameOrId === 'number' || /^\d+$/.test(usernameOrId)) {
-                url = `https://api.github.com/user/${usernameOrId}`;
-            } else {
-                url = `https://api.github.com/users/${usernameOrId}`;
-            }
-            
-            const response = await fetch(url);
-            if (!response.ok) {
-                console.warn('Failed to fetch user info for:', usernameOrId);
-                return null;
-            }
-            
-            const user = await response.json();
-            return {
-                login: user.login,
-                name: user.name || user.login,
-                avatar_url: user.avatar_url,
-                blog: user.blog || `https://github.com/${user.login}`,
-                html_url: user.html_url
-            };
-        } catch (error) {
-            console.error('Error fetching GitHub user info:', error);
-            return null;
-        }
-    }
-
-    // Function to update author info in UI
-    function updateAuthorInfo() {
-        const infoDiv = document.getElementById('author-info');
-        if (!infoDiv) return;
-
-        if (!currentGistAuthors.last) {
-            infoDiv.style.display = 'none';
-            return;
-        }
-
-        let html = '';
-        
-        // Last author (current loaded gist author)
-        if (currentGistAuthors.last) {
-            const lastAuthor = currentGistAuthors.last;
-            const lastUrl = lastAuthor.blog || lastAuthor.html_url;
-            html += `By <a href="${lastUrl}" target="_blank" class="author-link">${lastAuthor.name}`;
-            html += `<img src="${lastAuthor.avatar_url}" class="author-avatar" alt="${lastAuthor.name}" />`;
-            html += `</a>`;
-        }
-
-        // First author (original gist in history chain)
-        if (currentGistAuthors.first && currentGistAuthors.firstGistId &&
-            currentGistAuthors.firstGistId !== currentGistAuthors.lastGistId) {
-            const firstAuthor = currentGistAuthors.first;
-            const firstUrl = firstAuthor.blog || firstAuthor.html_url;
-            const firstGistUrl = `${window.location.origin}${window.location.pathname}?gist=${currentGistAuthors.firstGistId}`;
-            html += `,<br />based on <a href="${firstGistUrl}" target="_blank" class="author-link">this shader </a>`;
-            html += `by <a href="${firstUrl}" target="_blank" class="author-link">`;
-            html += `<img src="${firstAuthor.avatar_url}" class="author-avatar" alt="${firstAuthor.name}" />`;
-            html += `</a>`;
-        }
-
-        infoDiv.innerHTML = html;
-        infoDiv.style.display = 'block';
-    }
-
-    const decodeBase64 = (dataUrl) => {
-        const base64 = dataUrl.split(',')[1];
-        const binaryString = window.atob(base64);
-        const len = binaryString.length;
-        const data = new Uint8Array(len);
-        for (let k = 0; k < len; k++) {
-            data[k] = binaryString.charCodeAt(k);
-        }
-        return data;
     };
-
-    const downloadAsset = (url) => {
-        return fetch(url)
-            .then(res => {
-                if (!res.ok) throw new Error(res.statusText + ' (' + res.status + ') ' + url);
-                return res.arrayBuffer();
-            })
-            .then(buffer => new Uint8Array(buffer).slice(0)); 
-            // .slice(0) forces a copy to avoid detached buffer issues
-    };
-
-    const loadToWasm = (name, data) => {
-        updateLoader("Loading " + name);
-        return new Promise((resolve, reject) => {
-            let attempts = 0;
-            const tryWrite = () => {
-                attempts++;
-                if (attempts > 20) { // 10 seconds timeout
-                    console.error("Timeout waiting for WASM filesystem");
-                    resolve(); 
-                    return;
-                }
-
-                if (window.Module && window.Module.FS && window.module_loaded) {
-                    try {
-                        window.Module.FS.writeFile(name, data);
-                        logToConsole("Loaded asset: " + name);
-                        
-                        const ext = name.split('.').pop().toLowerCase();
-                        window.Module.ccall('loadAsset', null, ['string', 'string'], [name, ext]);
-
-                        if (['hdr'].includes(ext)) {
-                            sendCommand('cubemap,on');
-                        }
-
-                        resolve();
-                    } catch (e) {
-                        console.error("FS error", e);
-                        resolve(); 
-                    }
-                } else {
-                    setTimeout(tryWrite, 500);
-                }
-            };
-            tryWrite();
-        });
-    };
-
-    // Function to prune invalid gist IDs from history
-    async function pruneGistHistory() {
-        if (gistHistory.length === 0) return;
-        
-        console.log('Pruning gist history...');
-        const validHistory = [];
-        
-        for (const entry of gistHistory) {
-            try {
-                const response = await fetch(`https://api.github.com/gists/${entry.gistId}`);
-                if (response.ok) {
-                    validHistory.push(entry);
-                } else {
-                    console.log(`Gist ${entry.gistId} no longer exists, removing from history`);
-                }
-            } catch (error) {
-                console.warn(`Error checking gist ${entry.gistId}:`, error);
-                // Keep entry if there's a network error (don't assume it doesn't exist)
-                validHistory.push(entry);
-            }
-        }
-        
-        gistHistory = validHistory;
-        
-        // Save pruned history to localStorage
-        try {
-            localStorage.setItem('gist_history', JSON.stringify(gistHistory));
-            console.log('Pruned gist history saved to localStorage');
-        } catch (e) {
-            console.error('Error saving pruned gist history:', e);
-        }
-    }
-
-    function loadGist(id) {
-        if (currentGistId === id) {
-            console.log('Gist ' + id + ' already loading/loaded.');
-            return;
-        }
-        currentGistId = id;
-        showLoader("Loading Gist...");
-        
-        console.log('Loading Gist:', id);
-        fetch('https://api.github.com/gists/' + id)
-        .then(response => {
-            if (!response.ok) throw new Error(response.statusText);
-            return response.json();
-        })
-        .then(async data => {
-            // Store current gist owner info to be used after loading JSON
-            const currentGistOwnerInfo = {
-                gistId: id,
-                owner: data.owner ? {
-                    login: data.owner.login,
-                    id: data.owner.id,
-                    avatar_url: data.owner.avatar_url
-                } : null,
-                loadedAt: new Date().toISOString()
-            };
-            
-            // Look for shader.json
-            let shaderFile = null;
-            if (data.files['shader.json']) {
-                shaderFile = data.files['shader.json'];
-            } else {
-                // Fallback: look for first .json file
-                const names = Object.keys(data.files);
-                for (let name of names) {
-                    if (name.endsWith('.json')) {
-                        shaderFile = data.files[name];
-                        break;
-                    }
-                }
-            }
-
-            const processShader = async (jsonContent) => {
-                try {
-                    const json = JSON.parse(jsonContent);
-                    
-                    // Load history from the gist JSON
-                    if (json.history && Array.isArray(json.history)) {
-                        gistHistory = json.history;
-                        console.log('Loaded gist history from JSON:', gistHistory);
-                    } else {
-                        // If no history in JSON, start with empty history
-                        gistHistory = [];
-                        console.log('No history found in gist JSON, starting with empty history');
-                    }
-                    
-                    // Now add the current gist to the history chain if not already present
-                    const existingIndex = gistHistory.findIndex(h => h.gistId === id);
-                    if (existingIndex >= 0) {
-                        // Update existing entry with new load time
-                        gistHistory[existingIndex] = currentGistOwnerInfo;
-                    } else {
-                        // Add new gist to history chain
-                        gistHistory.push(currentGistOwnerInfo);
-                    }
-                    
-                    // Save updated history to localStorage
-                    try {
-                        localStorage.setItem('gist_history', JSON.stringify(gistHistory));
-                        console.log('Updated gist history:', gistHistory);
-                    } catch (e) {
-                        console.error('Error saving gist history to localStorage:', e);
-                    }
-                    
-                    // Determine first and last authors for attribution
-                    let firstOwner = gistHistory.length > 0 && gistHistory[0].owner ? gistHistory[0].owner : currentGistOwnerInfo.owner;
-                    let firstGistId = gistHistory.length > 0 && gistHistory[0].gistId ? gistHistory[0].gistId : id;
-                    let lastOwner = currentGistOwnerInfo.owner;
-                    let lastGistId = id;
-                    
-                    // Fetch full user info for first and last authors
-                    if (lastOwner) {
-                        currentGistAuthors.last = await fetchGitHubUserInfo(lastOwner.login);
-                        currentGistAuthors.lastGistId = lastGistId;
-                    }
-                    if (firstOwner && firstOwner.login) {
-                        currentGistAuthors.first = await fetchGitHubUserInfo(firstOwner.login);
-                        currentGistAuthors.firstGistId = firstGistId;
-                    }
-                    
-                    // Update author info display
-                    updateAuthorInfo();
-                    
-                    if (json.frag) content.frag = json.frag;
-                    if (json.vert) content.vert = json.vert;
-
-                    let assetPromises = [];
-
-                    if (json.assets) {
-                        externalAssets = json.assets;
-                        // console.log('Gist assets:', externalAssets);
-                        for (const [name, url] of Object.entries(externalAssets)) {
-                            let p;
-                            if (url.startsWith('data:')) {
-                                try {
-                                    const data = decodeBase64(url);
-                                    p = loadToWasm(name, data);
-                                } catch (e) {
-                                    console.error("Error decoding base64", e);
-                                    p = Promise.resolve();
-                                }
-                            } else {
-                                p = downloadAsset(url)
-                                .then(data => {
-                                    return loadToWasm(name, data);
-                                })
-                                .catch(err => {
-                                    logToConsole('Error loading asset ' + name + ': ' + err.message, true);
-                                    return Promise.resolve(); // Continue despite error
-                                });
-                            }
-                            assetPromises.push(p);
-                        }
-                    } else {
-                        externalAssets = {};
-                    }
-                    
-                    editor.setValue(content[activeTab]);
-                    updateShader();
-
-                    return Promise.all(assetPromises).then(() => {
-                        updateShader();
-                        if (json.commands && Array.isArray(json.commands)) {
-                            json.commands.forEach((cmd) => {
-                                sendCommand(cmd);
-                            });
-                        }
-
-                        // set both vert and frag to trigger reload with new asse
-                        setFrag(content.frag);
-                        setVert(content.vert);
-                    });
-                } catch (e) {
-                    currentGistId = null; 
-                    console.error('Error parsing Gist content:', e);
-                    logToConsole('Error parsing Gist JSON', true);
-                    return Promise.reject(e);
-                }
-            };
-
-            if (shaderFile) {
-                if (shaderFile.truncated) {
-                    updateLoader("Fetching raw Gist content...");
-                    fetch(shaderFile.raw_url)
-                    .then(r => r.text())
-                    .then(text => {
-                        return processShader(text);
-                    })
-                    .then(() => {
-                        hideLoader();
-                    })
-                    .catch(e => {
-                        logToConsole('Error fetching raw gist: ' + e, true);
-                        hideLoader();
-                    });
-                } else {
-                    processShader(shaderFile.content)
-                    .then(() => {
-                        hideLoader();
-                    })
-                    .catch(e => {
-                        hideLoader();
-                    });
-                } 
-            } else {
-                logToConsole('No valid shader JSON found in Gist', true);
-                hideLoader();
-            }
-        })
-        .catch(err => {
-            console.error('Error loading Gist:', err);
-            logToConsole('Error loading Gist: ' + err, true);
-            hideLoader();
-        });
-    }
-
-    async function saveGist() {
-        if (!githubToken) {
-            alert('Please login first');
-            return;
-        }
-
-        // Ask for a filename
-        let filename = prompt("Enter a name for your shader:", "shader");
-        if (!filename) return; // Cancelled
-
-        if (!filename.endsWith('.json')) {
-            filename += '.json';
-        }
-
-        // Ensure current editor content is saved to content object
-        content[activeTab] = editor.getValue();
-
-        // Prune invalid gist IDs before saving
-        await pruneGistHistory();
-
-        const payload = {
-            frag: content.frag,
-            vert: content.vert,
-            commands: getRetainedState(),
-            history: gistHistory
-        };
-
-        if (Object.keys(externalAssets).length > 0) {
-            payload.assets = externalAssets;
-        }
-
-        let contentString = "";
-        try {
-            contentString = JSON.stringify(payload, null, 2);
-        } catch (e) {
-            logToConsole('Error preparing JSON: ' + e.toString(), true);
-            return;
-        }
-
-        let files = {};
-        files[filename] = {
-            "content": contentString
-        };
-
-        const data = {
-            "description": "glslViewer Shader: " + filename.replace('.json', ''),
-            "public": true,
-            "files": files
-        };
-
-        const currentGistId = getQueryVariable('gist');
-        const method = 'POST'; 
-        
-        const url = 'https://api.github.com/gists';
-
-        fetch(url, {
-            method: 'POST',
-            headers: {
-                'Authorization': 'token ' + githubToken,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(data)
-        })
-        .then(response => {
-             if (response.ok) return response.json();
-             throw new Error('Save failed: ' + response.statusText);
-        })
-        .then(data => {
-            const id = data.id;
-            console.log('Saved Gist:', id);
-            logToConsole('Saved to Gist: ' + id);
-            
-            // Track gist ownership
-            const ownerInfo = {
-                gistId: id,
-                owner: data.owner ? {
-                    login: data.owner.login,
-                    id: data.owner.id,
-                    avatar_url: data.owner.avatar_url
-                } : null,
-                savedAt: new Date().toISOString()
-            };
-            
-            // Add to history
-            const existingIndex = gistHistory.findIndex(h => h.gistId === id);
-            if (existingIndex >= 0) {
-                gistHistory[existingIndex] = ownerInfo;
-            } else {
-                gistHistory.push(ownerInfo);
-            }
-            
-            // Save to localStorage
-            try {
-                localStorage.setItem('gist_history', JSON.stringify(gistHistory));
-            } catch (e) {
-                console.error('Error saving gist history:', e);
-            }
-            
-            console.log('Gist history:', gistHistory);
-            
-            // Update URL
-            const newUrl = window.location.protocol + "//" + window.location.host + window.location.pathname + '?gist=' + id;
-            window.history.pushState({path:newUrl},'',newUrl);
-        })
-        .catch(err => {
-            console.error(err);
-            logToConsole(err.message, true);
-        });
-    }
-
-    if (newBtn) newBtn.addEventListener('click', () => {
-        if (confirm('Create a new shader? This will clear your current work.')) {
-            window.location.href = window.location.pathname;
+    
+    // Setup editor change handler
+    editorManager.onChange(updateShader);
+    
+    // Console input handler
+    ui.setupConsoleInput((cmd) => {
+        // Handle fullscreen commands through UI
+        if (cmd === 'fullscreen,on') {
+            ui.setFullscreen(true);
+            ui.logToConsole('> ' + cmd);
+            ui.logToConsole('on');
+        } else if (cmd === 'fullscreen,off') {
+            ui.setFullscreen(false);
+            ui.logToConsole('> ' + cmd);
+            ui.logToConsole('off');
+        } else if (cmd === 'fullscreen,toggle') {
+            ui.setFullscreen(!ui.getFullscreen());
+            ui.logToConsole('> ' + cmd);
+            ui.logToConsole(ui.getFullscreen() ? 'on' : 'off');
+        } else if (cmd === 'fullscreen') {
+            ui.logToConsole('> ' + cmd);
+            ui.logToConsole(ui.getFullscreen() ? 'on' : 'off');
+        } else {
+            glslviewer.sendCommand(cmd);
         }
     });
     
-    if (loginBtn) loginBtn.addEventListener('click', loginGithub);
-    if (saveBtn) saveBtn.addEventListener('click', saveGist);
-    if (openBtn) openBtn.addEventListener('click', openGist);
-    
-    // View dropdown menu
-    if (viewBtn && viewDropdown) {
-        // Initialize dropdown items
-        function updateViewDropdown() {
-            viewDropdown.innerHTML = '';
-            cmds_state.forEach((cmd) => {
-                const item = document.createElement('div');
-                item.className = 'dropdown-item';
-                
-                const checkbox = document.createElement('span');
-                checkbox.className = 'checkbox';
-                checkbox.textContent = '☐';
-                
-                const label = document.createElement('span');
-                label.textContent = cmd.replace('_', ' ');
-                
-                item.appendChild(checkbox);
-                item.appendChild(label);
-                
-                item.addEventListener('click', () => {
-                    if (cmd === 'plot') {
-                        // Special handling for plot: cycle through all plot modes
-                        let currentState = 'off';
-                        if (window.Module && window.Module.ccall) {
-                            try {
-                                currentState = window.Module.ccall('query', 'string', ['string'], [cmd]);
-                            } catch (e) {
-                                console.error('Error querying state:', e);
-                            }
-                        }
-                        
-                        // Cycle to next state
-                        const currentIndex = cmds_plot_modes.indexOf(currentState);
-                        const nextIndex = (currentIndex + 1) % cmds_plot_modes.length;
-                        const newState = cmds_plot_modes[nextIndex];
-                        
-                        sendCommand(cmd + ',' + newState);
-                    } else {
-                        // Query current state
-                        let currentState = 'off';
-                        if (cmd === 'fullscreen') {
-                            currentState = getFullscreen() ? 'on' : 'off';
-                        } else if (window.Module && window.Module.ccall) {
-                            try {
-                                currentState = window.Module.ccall('query', 'string', ['string'], [cmd]);
-                            } catch (e) {
-                                console.error('Error querying state:', e);
-                            }
-                        }
-                        
-                        // Toggle state
-                        const newState = (currentState === 'on') ? 'off' : 'on';
-                        sendCommand(cmd + ',' + newState);
-                    }
-                    
-                    // Update checkbox immediately
-                    setTimeout(updateViewDropdownStates, 100);
-                });
-                
-                viewDropdown.appendChild(item);
-            });
-            updateViewDropdownStates();
-        }
+    // File drag & drop handler
+    ui.setupFileDragDrop((files) => {
+        ui.showLoader();
         
-        function updateViewDropdownStates() {
-            const items = viewDropdown.querySelectorAll('.dropdown-item');
-            items.forEach((item, index) => {
-                const cmd = cmds_state[index];
-                const checkbox = item.querySelector('.checkbox');
-                
-                let state = 'off';
-                if (cmd === 'fullscreen') {
-                    state = getFullscreen() ? 'on' : 'off';
-                } else if (window.Module && window.Module.ccall) {
-                    try {
-                        state = window.Module.ccall('query', 'string', ['string'], [cmd]);
-                    } catch (e) {
-                        // Module might not be ready yet
-                    }
-                }
-                
-                if (cmd === 'plot') {
-                    // Show current state as text for plot
-                    checkbox.textContent = state;
-                } else {
-                    // Show checkbox for other commands
-                    checkbox.textContent = (state === 'on') ? '☑' : '☐';
-                }
-            });
-        }
-        
-        // Toggle dropdown visibility
-        viewBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            const isVisible = viewDropdown.style.display === 'block';
-            viewDropdown.style.display = isVisible ? 'none' : 'block';
-            if (!isVisible) {
-                updateViewDropdown();
-            }
-        });
-        
-        // Close dropdown when clicking outside
-        document.addEventListener('click', (e) => {
-            if (!viewBtn.contains(e.target) && !viewDropdown.contains(e.target)) {
-                viewDropdown.style.display = 'none';
-            }
-        });
-        
-        // Initialize on module load
-        const originalCheckModule = checkModule;
-    }
-
-    // Initial check
-    checkGithubToken();
-    
-    // --- File Drag & Drop ---
-    function handleDrop(e) {
-        e.preventDefault();
-        e.stopPropagation();
-        
-        const files = e.dataTransfer.files;
+        const promises = [];
         for (let i = 0; i < files.length; i++) {
             const file = files[i];
             const name = file.name;
             const ext = name.split('.').pop().toLowerCase();
             
-            showLoader();
             if (ext === 'frag' || ext === 'fs' || ext === 'vert' || ext === 'vs') {
-                const reader = new FileReader();
-                reader.onload = (event) => {
-                    const data = event.target.result;
-                    if (ext === 'frag' || ext === 'fs') {
-                        content.frag = data;
-                        if (activeTab === 'frag') {
-                            editor.setValue(data);
-                        } else {
-                             setFrag(data);
-                        }
-                    } else {
-                        content.vert = data;
-                        if (activeTab === 'vert') {
-                            editor.setValue(data);
-                        } else {
-                             setVert(data);
-                        }
-                    }
-                    hideLoader();
-                };
-                reader.onerror = () => hideLoader();
-                reader.readAsText(file);
-            } 
-            else {
-                // Binary or other assets
-                const reader = new FileReader();
-                reader.onload = (event) => {
-                    const dataURL = event.target.result;
-                    
-                    externalAssets[name] = dataURL;
-
-                    // if the vert and frag are the same as default, update them
-                    if (content.frag === defaultFragment && content.vert === defaultVertex)  {
-                        if (['ply', 'obj', 'gltf', 'glb', 'splat'].includes(ext)) {
-                            if (window.module_loaded) {
-                                fetchShadersFromBackend();
-                                sendCommand('sky,on');
-                            }
-                        }
-                    }
-                    else {
-                        // re send current shaders to trigger reload with new asset
-                        // clean console
-                        if (consoleOutput)
-                            consoleOutput.innerHTML = '';
+                // Shader files
+                promises.push(
+                    glslviewer.handleFileDrop(file, (type, data) => {
+                        editorManager.setContent(type, data);
+                    }, ui.updateLoader.bind(ui))
+                );
+            } else {
+                // Asset files
+                promises.push(
+                    glslviewer.handleFileDrop(file, null, ui.updateLoader.bind(ui))
+                    .then(() => {
+                        const content = editorManager.getAllContent();
                         
-                        try {
-                            setFrag(content.frag);
-                            setVert(content.vert);   
-                        } catch (e) {
-                            console.error("Error reloading shaders after asset drop:", e);
+                        // If default shaders and asset is 3D model, fetch backend shaders
+                        if (content.frag === defaultFragment && content.vert === defaultVertex) {
+                            if (['ply', 'obj', 'gltf', 'glb', 'splat'].includes(ext)) {
+                                if (glslviewer.isModuleReady()) {
+                                    const shaders = glslviewer.fetchShadersFromBackend();
+                                    if (shaders.frag) editorManager.setContent('frag', shaders.frag);
+                                    if (shaders.vert) editorManager.setContent('vert', shaders.vert);
+                                    glslviewer.sendCommand('sky,on');
+                                }
+                            }
+                        } else {
+                            // Reload shaders to trigger reload with new asset
+                            ui.clearConsole();
+                            glslviewer.setFrag(content.frag);
+                            glslviewer.setVert(content.vert);
                         }
-                    }
-                    hideLoader();
-                };
-                reader.onerror = () => hideLoader();
-                reader.readAsDataURL(file);
+                    })
+                );
             }
         }
-    }
+        
+        Promise.all(promises).finally(() => {
+            ui.hideLoader();
+        });
+    });
     
-    document.body.addEventListener('dragover', (e) => { e.preventDefault(); e.stopPropagation(); });
-    document.body.addEventListener('drop', handleDrop);
+    // GitHub buttons setup
+    ui.setupGitHubButtons(github, {
+        onSave: async () => {
+            let filename = prompt("Enter a name for your shader:", "shader");
+            if (!filename) return;
+            
+            const content = editorManager.getAllContent();
+            const payload = {
+                frag: content.frag,
+                vert: content.vert,
+                commands: [
+                    ...glslviewer.getRetainedState(),
+                    ...(ui.getFullscreen() ? ['fullscreen,on'] : [])
+                ],
+                assets: glslviewer.getExternalAssets()
+            };
+            
+            try {
+                const id = await github.saveGist(payload, filename);
+                ui.logToConsole('Saved to Gist: ' + id);
+                
+                const newUrl = window.location.protocol + "//" + window.location.host + 
+                               window.location.pathname + '?gist=' + id;
+                window.history.pushState({path:newUrl},'',newUrl);
+            } catch (err) {
+                ui.logToConsole(err.message, true);
+            }
+        }
+    });
+    
+    // Expose methods for external use
+    window.getRetainedState = () => {
+        return [
+            ...glslviewer.getRetainedState(),
+            ...(ui.getFullscreen() ? ['fullscreen,on'] : [])
+        ];
+    };
+    window.getGistHistory = () => github.getGistHistory();
+    
+    // Wait for Module to be ready
+    const checkModule = setInterval(() => {
+        if (glslviewer.isModuleReady()) {
+            clearInterval(checkModule);
+            console.log("Module loaded, sending initial shader.");
+            
+            ui.hideLoader();
+
+            const gistId = getQueryVariable('gist');
+            if (gistId) {
+                // Load gist
+                github.loadGist(gistId, {
+                    onStart: () => ui.showLoader("Loading Gist..."),
+                    onUpdate: (text) => ui.updateLoader(text),
+                    onSuccess: async (json) => {
+                        if (json.frag) editorManager.setContent('frag', json.frag);
+                        if (json.vert) editorManager.setContent('vert', json.vert);
+                        
+                        updateShader();
+                        
+                        if (json.assets) {
+                            await glslviewer.loadAssetsFromGist(json.assets, ui.updateLoader.bind(ui));
+                        }
+                        
+                        // Apply commands
+                        if (json.commands && Array.isArray(json.commands)) {
+                            json.commands.forEach((cmd) => {
+                                if (cmd.startsWith('fullscreen,')) {
+                                    const state = cmd.split(',')[1];
+                                    ui.setFullscreen(state === 'on');
+                                } else {
+                                    glslviewer.sendCommand(cmd);
+                                }
+                            });
+                        }
+                        
+                        // Re-send shaders to trigger reload with assets
+                        const content = editorManager.getAllContent();
+                        glslviewer.setFrag(content.frag);
+                        glslviewer.setVert(content.vert);
+                        
+                        ui.hideLoader();
+                    },
+                    onError: (error) => {
+                        ui.logToConsole('Error loading Gist: ' + error, true);
+                        ui.hideLoader();
+                    }
+                });
+            } else {
+                updateShader();
+            }
+        }
+    }, 500);
 });
