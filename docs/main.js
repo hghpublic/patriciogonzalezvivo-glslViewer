@@ -583,6 +583,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     let currentGistId = null;
     let gistHistory = [];
+    let currentGistAuthors = { first: null, last: null };
     
     // Load gist history from localStorage
     try {
@@ -593,6 +594,71 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     } catch (e) {
         console.error('Error loading gist history:', e);
+    }
+
+    // Function to fetch GitHub user details (name, website, avatar)
+    async function fetchGitHubUserInfo(usernameOrId) {
+        try {
+            let url;
+            // Check if it's a numeric ID or username
+            if (typeof usernameOrId === 'number' || /^\d+$/.test(usernameOrId)) {
+                url = `https://api.github.com/user/${usernameOrId}`;
+            } else {
+                url = `https://api.github.com/users/${usernameOrId}`;
+            }
+            
+            const response = await fetch(url);
+            if (!response.ok) {
+                console.warn('Failed to fetch user info for:', usernameOrId);
+                return null;
+            }
+            
+            const user = await response.json();
+            return {
+                login: user.login,
+                name: user.name || user.login,
+                avatar_url: user.avatar_url,
+                blog: user.blog || `https://github.com/${user.login}`,
+                html_url: user.html_url
+            };
+        } catch (error) {
+            console.error('Error fetching GitHub user info:', error);
+            return null;
+        }
+    }
+
+    // Function to update author info in UI
+    function updateAuthorInfo() {
+        const infoDiv = document.getElementById('author-info');
+        if (!infoDiv) return;
+
+        if (!currentGistAuthors.last) {
+            infoDiv.style.display = 'none';
+            return;
+        }
+
+        let html = '';
+        
+        // Last author (current author)
+        if (currentGistAuthors.last) {
+            const lastAuthor = currentGistAuthors.last;
+            const lastUrl = lastAuthor.blog || lastAuthor.html_url;
+            html += `By <a href="${lastUrl}" target="_blank" class="author-link">${lastAuthor.name}</a> `;
+            html += `<img src="${lastAuthor.avatar_url}" class="author-avatar" alt="${lastAuthor.name}" />`;
+        }
+
+        // First author (original author)
+        if (currentGistAuthors.first && currentGistAuthors.first.login !== currentGistAuthors.last?.login) {
+            html += ',<br />based on ';
+            const firstAuthor = currentGistAuthors.first;
+            const firstUrl = firstAuthor.blog || firstAuthor.html_url;
+            html += `<a href="${firstUrl}" target="_blank" class="author-link">${firstAuthor.name}</a> `;
+            html += `<img src="${firstAuthor.avatar_url}" class="author-avatar" alt="${firstAuthor.name}" />`;
+            html += ` <a href="https://gist.github.com/${currentGistId}" target="_blank" class="gist-link">[gist]</a>`;
+        }
+
+        infoDiv.innerHTML = html;
+        infoDiv.style.display = 'block';
     }
 
     const decodeBase64 = (dataUrl) => {
@@ -653,6 +719,39 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     };
 
+    // Function to prune invalid gist IDs from history
+    async function pruneGistHistory() {
+        if (gistHistory.length === 0) return;
+        
+        console.log('Pruning gist history...');
+        const validHistory = [];
+        
+        for (const entry of gistHistory) {
+            try {
+                const response = await fetch(`https://api.github.com/gists/${entry.gistId}`);
+                if (response.ok) {
+                    validHistory.push(entry);
+                } else {
+                    console.log(`Gist ${entry.gistId} no longer exists, removing from history`);
+                }
+            } catch (error) {
+                console.warn(`Error checking gist ${entry.gistId}:`, error);
+                // Keep entry if there's a network error (don't assume it doesn't exist)
+                validHistory.push(entry);
+            }
+        }
+        
+        gistHistory = validHistory;
+        
+        // Save pruned history to localStorage
+        try {
+            localStorage.setItem('gist_history', JSON.stringify(gistHistory));
+            console.log('Pruned gist history saved to localStorage');
+        } catch (e) {
+            console.error('Error saving pruned gist history:', e);
+        }
+    }
+
     function loadGist(id) {
         if (currentGistId === id) {
             console.log('Gist ' + id + ' already loading/loaded.');
@@ -667,9 +766,9 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!response.ok) throw new Error(response.statusText);
             return response.json();
         })
-        .then(data => {
-            // Track gist ownership
-            const ownerInfo = {
+        .then(async data => {
+            // Store current gist owner info to be used after loading JSON
+            const currentGistOwnerInfo = {
                 gistId: id,
                 owner: data.owner ? {
                     login: data.owner.login,
@@ -678,23 +777,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 } : null,
                 loadedAt: new Date().toISOString()
             };
-            
-            // Add to history if not already present
-            const existingIndex = gistHistory.findIndex(h => h.gistId === id);
-            if (existingIndex >= 0) {
-                gistHistory[existingIndex] = ownerInfo;
-            } else {
-                gistHistory.push(ownerInfo);
-            }
-            
-            // Save to localStorage
-            try {
-                localStorage.setItem('gist_history', JSON.stringify(gistHistory));
-            } catch (e) {
-                console.error('Error saving gist history:', e);
-            }
-            
-            console.log('Gist history:', gistHistory);
             
             // Look for shader.json
             let shaderFile = null;
@@ -711,9 +793,53 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
 
-            const processShader = (jsonContent) => {
+            const processShader = async (jsonContent) => {
                 try {
                     const json = JSON.parse(jsonContent);
+                    
+                    // Load history from the gist JSON
+                    if (json.history && Array.isArray(json.history)) {
+                        gistHistory = json.history;
+                        console.log('Loaded gist history from JSON:', gistHistory);
+                    } else {
+                        // If no history in JSON, start with empty history
+                        gistHistory = [];
+                        console.log('No history found in gist JSON, starting with empty history');
+                    }
+                    
+                    // Now add the current gist to the history chain if not already present
+                    const existingIndex = gistHistory.findIndex(h => h.gistId === id);
+                    if (existingIndex >= 0) {
+                        // Update existing entry with new load time
+                        gistHistory[existingIndex] = currentGistOwnerInfo;
+                    } else {
+                        // Add new gist to history chain
+                        gistHistory.push(currentGistOwnerInfo);
+                    }
+                    
+                    // Save updated history to localStorage
+                    try {
+                        localStorage.setItem('gist_history', JSON.stringify(gistHistory));
+                        console.log('Updated gist history:', gistHistory);
+                    } catch (e) {
+                        console.error('Error saving gist history to localStorage:', e);
+                    }
+                    
+                    // Determine first and last authors for attribution
+                    const historyForGist = gistHistory.filter(h => h.gistId === id);
+                    let firstOwner = gistHistory.length > 0 && gistHistory[0].owner ? gistHistory[0].owner : currentGistOwnerInfo.owner;
+                    let lastOwner = currentGistOwnerInfo.owner;
+                    
+                    // Fetch full user info for first and last authors
+                    if (lastOwner) {
+                        currentGistAuthors.last = await fetchGitHubUserInfo(lastOwner.login);
+                    }
+                    if (firstOwner && firstOwner.login) {
+                        currentGistAuthors.first = await fetchGitHubUserInfo(firstOwner.login);
+                    }
+                    
+                    // Update author info display
+                    updateAuthorInfo();
                     
                     if (json.frag) content.frag = json.frag;
                     if (json.vert) content.vert = json.vert;
@@ -808,7 +934,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    function saveGist() {
+    async function saveGist() {
         if (!githubToken) {
             alert('Please login first');
             return;
@@ -825,10 +951,14 @@ document.addEventListener('DOMContentLoaded', () => {
         // Ensure current editor content is saved to content object
         content[activeTab] = editor.getValue();
 
+        // Prune invalid gist IDs before saving
+        await pruneGistHistory();
+
         const payload = {
             frag: content.frag,
             vert: content.vert,
-            commands: getRetainedState()
+            commands: getRetainedState(),
+            history: gistHistory
         };
 
         if (Object.keys(externalAssets).length > 0) {

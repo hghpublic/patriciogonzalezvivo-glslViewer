@@ -122,6 +122,9 @@ body.windowed-mode {
     bottom: 20px;
     right: 20px;
     z-index: 100;
+    display: flex;
+    align-items: center;
+    gap: 15px;
 }
 
 #resize-btn {
@@ -137,10 +140,51 @@ body.windowed-mode {
     cursor: pointer;
     outline: none;
     transition: background 0.2s;
+    flex-shrink: 0;
 }
 
 #resize-btn:hover {
     background: rgba(0,0,0,0.8);
+}
+
+/* Author Info */
+#author-info {
+    background: rgba(0, 0, 0, 0.7);
+    color: white;
+    padding: 10px 15px;
+    border-radius: 8px;
+    font-size: 12px;
+    line-height: 1.6;
+    display: none;
+    max-width: 300px;
+}
+
+#author-info .author-link {
+    color: #58a6ff;
+    text-decoration: none;
+    font-weight: 600;
+}
+
+#author-info .author-link:hover {
+    text-decoration: underline;
+}
+
+#author-info .author-avatar {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    vertical-align: middle;
+    margin-left: 4px;
+}
+
+#author-info .gist-link {
+    color: #58a6ff;
+    text-decoration: none;
+    font-size: 11px;
+}
+
+#author-info .gist-link:hover {
+    text-decoration: underline;
 }
 
 /* Info */
