@@ -969,9 +969,35 @@ void GlslViewer::commandsInit(CommandList &_commands ) {
                 }
                 else if (uniforms.cameras.find(values[1]) != uniforms.cameras.end()) {
                     uniforms.activeCamera = uniforms.cameras[ values[1] ];
+                    
+                    // If this camera doesn't have a properly set target yet, calculate it
+                    // Target should be at the scene origin where the model is centered
+                    glm::vec3 current_target = uniforms.activeCamera->getTarget();
+                    float target_dist = glm::length(current_target);
+                    if (target_dist < 0.001f) {
+                        // Target is at origin (default), calculate proper target
+                        glm::vec3 cam_pos = uniforms.activeCamera->getPosition();
+                        glm::vec3 cam_forward = -uniforms.activeCamera->getZAxis();
+                        
+                        // Set target at the scene origin if camera points toward it
+                        glm::vec3 scene_origin = glm::vec3(0.0f, 0.0f, 0.0f);
+                        glm::vec3 to_origin = scene_origin - cam_pos;
+                        float dist_to_origin = glm::length(to_origin);
+                        float proj = glm::dot(glm::normalize(to_origin), cam_forward);
+                        
+                        // If camera generally points toward origin, use that
+                        if (proj > 0.5f && dist_to_origin > 0.01f) {
+                            // Don't call setTarget() as it will change orientation
+                            // Just compute target for orbital controls
+                            current_target = scene_origin;
+                        } else {
+                            // Use a point in front of camera
+                            current_target = cam_pos + cam_forward * 1.0f;
+                        }
+                    }
+                    
                     uniforms.cameras["default"]->setTransformMatrix(uniforms.activeCamera->getTransformMatrix());
                     uniforms.cameras["default"]->setProjection(uniforms.activeCamera->getProjectionMatrix());
-                    uniforms.cameras["default"]->setTarget(uniforms.activeCamera->getTarget());
                     uniforms.cameras["default"]->bFlipped = uniforms.activeCamera->bFlipped;
 
                     // convert camera_transform to vector<float>
@@ -989,14 +1015,17 @@ void GlslViewer::commandsInit(CommandList &_commands ) {
                             camera_projection[i * 4 + j] = pm[j][i];
                     uniforms.set("u_cameraProjectionMatrix", camera_projection);
 
-                    // Calculate orbital parameters from the loaded camera's orientation
-                    glm::vec3 v = uniforms.activeCamera->getPosition() - uniforms.activeCamera->getTarget();
+                    // Calculate orbital parameters from the camera's position relative to target
+                    glm::vec3 v = uniforms.activeCamera->getPosition() - current_target;
                     float dist = glm::length(v);
 
                     if (dist > 0.001f) {
                         m_camera_elevation = -glm::degrees(asinf(glm::clamp(v.y / dist, -1.0f, 1.0f)));
                         m_camera_azimuth = glm::degrees(atan2f(v.x, v.z));
                     }
+                    
+                    // Now set the target on default camera (this won't affect activeCamera)
+                    uniforms.cameras["default"]->setTarget(current_target);
                     
                     std::string camera_texture_name = "_camera" + values[1];
                     if (uniforms.textures.find(camera_texture_name) != uniforms.textures.end()) {

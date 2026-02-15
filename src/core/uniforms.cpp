@@ -705,8 +705,8 @@ bool Uniforms::addCameras( const std::string& _filename ) {
             glm::mat4 cam_to_world = glm::inverse(world_to_cam);
             
             // Convert from OpenCV/COLMAP coordinate system to OpenGL
-            // OpenCV: X right, Y down, Z forward
-            // OpenGL: X right, Y up, Z backward
+            // OpenCV: X right, Y down, Z forward (camera looks down +Z)
+            // OpenGL: X right, Y up, Z backward (camera looks down -Z)
             glm::mat4 flip = glm::mat4(
                 1.0f,  0.0f,  0.0f, 0.0f,
                 0.0f, -1.0f,  0.0f, 0.0f,
@@ -714,19 +714,24 @@ bool Uniforms::addCameras( const std::string& _filename ) {
                 0.0f,  0.0f,  0.0f, 1.0f
             );
             
+            // 180-degree rotation around Y-axis
+            glm::mat4 rot180 = glm::mat4(
+                -1.0f,  0.0f,  0.0f, 0.0f,
+                 0.0f,  1.0f,  0.0f, 0.0f,
+                 0.0f,  0.0f, -1.0f, 0.0f,
+                 0.0f,  0.0f,  0.0f, 1.0f
+            );
+            
             // Image filename (optional)
             std::string image_filename = (params.size() > quat_offset + 6) ? params[quat_offset + 7] : "";
 
             vera::Camera* camera = new vera::Camera();
-            camera->setTransformMatrix(flip * cam_to_world);
+            camera->setTransformMatrix(rot180 * flip * cam_to_world * flip);
             camera->setProjection(projection);
             camera->bFlipped = false;
             
-            // Set target in front of camera based on its forward direction
-            // After applying the coordinate flip, camera looks down -Z axis
-            glm::vec3 cam_pos = glm::vec3(camera->getTransformMatrix()[3]);
-            glm::vec3 cam_forward = -glm::vec3(camera->getTransformMatrix()[2]); // -Z axis in camera space
-            camera->setTarget(cam_pos + cam_forward * 1.0f); // Set target 1 unit in front
+            // Don't set target here - it will be calculated when switching to this camera
+            // Setting target calls lookAt() which would override the camera orientation
             
             // Adding to VERA scene cameras
             vera::addCamera( vera::toString(counter), camera );
