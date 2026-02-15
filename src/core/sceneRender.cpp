@@ -236,7 +236,7 @@ void SceneRender::commandsInit(CommandList& _commands, Uniforms& _uniforms) {
             if (_line == "floor") {
                 // std::string rta = m_floor_subd > 0 ? vera::toString(m_floor_subd) : "off";
 
-                std::string rta = m_floor_subd > 0 ? "on" : "off";
+                std::string rta = m_floor_subd_target > -1 ? "on" : "off";
                 std::cout << rta << std::endl; 
                 return true;
             }

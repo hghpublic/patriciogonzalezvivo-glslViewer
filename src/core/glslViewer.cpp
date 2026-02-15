@@ -2191,7 +2191,7 @@ void GlslViewer::renderUI() {
     vera::resetCamera();
 
     if (m_showTextures || m_showPasses) {
-        vera::textSize(18.0f);
+        vera::textSize(14.0f);
         vera::textAngle(0.0);
     }
 
@@ -2222,7 +2222,7 @@ void GlslViewer::renderUI() {
                 float imgAspect = texWidth / texHeight;
                 
                 // Calculate drawing height: limited to 64px and actual texture height
-                float drawHeight = fmin(64.0f, texHeight);
+                float drawHeight = fmin(fmin(64.0f, h/(nTotal+1)), texHeight);
                 float drawWidth = drawHeight * imgAspect;
                 yOffset -= drawHeight; // Center of first texture at top of screen
                 

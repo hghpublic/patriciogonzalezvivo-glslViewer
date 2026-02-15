@@ -31,7 +31,7 @@ void main() {
 }
 `;
 
-const cmds_state = ['plot', 'textures', 'buffers', 'cubemap', 'axis', 'grid', 'bboxes', 'fullscreen'];
+const cmds_state = ['plot', 'textures', 'buffers', 'floor', 'cubemap', 'axis', 'grid', 'bboxes', 'fullscreen'];
 const cmds_plot_modes = ['off', 'fps', 'rgb', 'luma'];
 const cmds_camera = ['camera_position', 'camera_look_at'];
 const cmds_listen = ['plane', 'pcl_plane', 'sphere', 'pcl_sphere', 'icosphere', 'cylinder'];
@@ -334,6 +334,7 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     window.getRetainedState = getRetainedState;
+    window.getGistHistory = () => gistHistory;
 
     const setFrag = function(code) {
         if (window.Module && window.Module.ccall) {
@@ -581,6 +582,18 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     let currentGistId = null;
+    let gistHistory = [];
+    
+    // Load gist history from localStorage
+    try {
+        const savedHistory = localStorage.getItem('gist_history');
+        if (savedHistory) {
+            gistHistory = JSON.parse(savedHistory);
+            console.log('Loaded gist history from localStorage:', gistHistory);
+        }
+    } catch (e) {
+        console.error('Error loading gist history:', e);
+    }
 
     const decodeBase64 = (dataUrl) => {
         const base64 = dataUrl.split(',')[1];
@@ -655,6 +668,34 @@ document.addEventListener('DOMContentLoaded', () => {
             return response.json();
         })
         .then(data => {
+            // Track gist ownership
+            const ownerInfo = {
+                gistId: id,
+                owner: data.owner ? {
+                    login: data.owner.login,
+                    id: data.owner.id,
+                    avatar_url: data.owner.avatar_url
+                } : null,
+                loadedAt: new Date().toISOString()
+            };
+            
+            // Add to history if not already present
+            const existingIndex = gistHistory.findIndex(h => h.gistId === id);
+            if (existingIndex >= 0) {
+                gistHistory[existingIndex] = ownerInfo;
+            } else {
+                gistHistory.push(ownerInfo);
+            }
+            
+            // Save to localStorage
+            try {
+                localStorage.setItem('gist_history', JSON.stringify(gistHistory));
+            } catch (e) {
+                console.error('Error saving gist history:', e);
+            }
+            
+            console.log('Gist history:', gistHistory);
+            
             // Look for shader.json
             let shaderFile = null;
             if (data.files['shader.json']) {
@@ -834,6 +875,34 @@ document.addEventListener('DOMContentLoaded', () => {
             const id = data.id;
             console.log('Saved Gist:', id);
             logToConsole('Saved to Gist: ' + id);
+            
+            // Track gist ownership
+            const ownerInfo = {
+                gistId: id,
+                owner: data.owner ? {
+                    login: data.owner.login,
+                    id: data.owner.id,
+                    avatar_url: data.owner.avatar_url
+                } : null,
+                savedAt: new Date().toISOString()
+            };
+            
+            // Add to history
+            const existingIndex = gistHistory.findIndex(h => h.gistId === id);
+            if (existingIndex >= 0) {
+                gistHistory[existingIndex] = ownerInfo;
+            } else {
+                gistHistory.push(ownerInfo);
+            }
+            
+            // Save to localStorage
+            try {
+                localStorage.setItem('gist_history', JSON.stringify(gistHistory));
+            } catch (e) {
+                console.error('Error saving gist history:', e);
+            }
+            
+            console.log('Gist history:', gistHistory);
             
             // Update URL
             const newUrl = window.location.protocol + "//" + window.location.host + window.location.pathname + '?gist=' + id;

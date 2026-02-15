@@ -150,6 +150,15 @@ Uniforms::Uniforms() : m_frame(0), m_play(true) {
         return std::string("");
     });
 
+    functions["u_cameraFov"] = UniformFunction("float", [this](vera::Shader& _shader) {
+        if (activeCamera)
+            _shader.setUniform("u_cameraFov", activeCamera->getFOV());
+    },
+    [this]() { 
+        if (activeCamera)            return vera::toString(activeCamera->getFOV());
+        return std::string("");
+    });
+
     functions["u_cameraEv100"] = UniformFunction("float", [this](vera::Shader& _shader) {
         if (activeCamera)
             _shader.setUniform("u_cameraEv100", activeCamera->getEv100());
