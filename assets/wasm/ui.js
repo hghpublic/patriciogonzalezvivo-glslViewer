@@ -242,6 +242,9 @@ export class UIManager {
         }
 
         try {
+            // Wait for next animation frame to ensure WebGL has finished rendering
+            await new Promise(resolve => requestAnimationFrame(resolve));
+            
             // Log original canvas dimensions
             console.log(`Original canvas size: ${canvas.width}x${canvas.height}`);
             
