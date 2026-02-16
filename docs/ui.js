@@ -234,6 +234,77 @@ export class UIManager {
         }
     }
 
+    async uploadCanvasToLygia(gistId) {
+        const canvas = document.getElementById('canvas');
+        if (!canvas) {
+            console.error('Canvas not found');
+            return false;
+        }
+
+        try {
+            // Log original canvas dimensions
+            console.log(`Original canvas size: ${canvas.width}x${canvas.height}`);
+            
+            // Create a 128x128 canvas for the thumbnail
+            const thumbnailCanvas = document.createElement('canvas');
+            thumbnailCanvas.width = 128;
+            thumbnailCanvas.height = 128;
+            const ctx = thumbnailCanvas.getContext('2d');
+            
+            // Fill with black background (in case canvas has transparency)
+            ctx.fillStyle = '#000000';
+            ctx.fillRect(0, 0, 128, 128);
+            
+            // Draw the original canvas scaled down to 128x128
+            // This will stretch/squash to fit exactly 128x128
+            ctx.drawImage(canvas, 0, 0, 128, 128);
+            
+            console.log(`Thumbnail canvas size: ${thumbnailCanvas.width}x${thumbnailCanvas.height}`);
+            
+            // Convert to PNG blob
+            const blob = await new Promise((resolve, reject) => {
+                thumbnailCanvas.toBlob((blob) => {
+                    if (blob) {
+                        console.log(`PNG blob created: ${blob.size} bytes, type: ${blob.type}`);
+                        resolve(blob);
+                    }
+                    else reject(new Error('Failed to create thumbnail blob'));
+                }, 'image/png');
+            });
+            
+            // Verify blob is PNG
+            if (blob.type !== 'image/png') {
+                throw new Error(`Expected image/png, got ${blob.type}`);
+            }
+            
+            // Create form data with the correct filename
+            const formData = new FormData();
+            formData.append('file', blob, `${gistId}.png`);
+            
+            console.log(`Uploading ${gistId}.png (128x128) to lygia.xyz...`);
+            
+            // Upload to lygia.xyz
+            const response = await fetch(`https://lygia.xyz/upload/gist/${gistId}`, {
+                method: 'POST',
+                body: formData
+            });
+            
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(`Upload failed (${response.status}): ${errorText}`);
+            }
+            
+            this.logToConsole(`Canvas thumbnail (128x128 PNG) uploaded to lygia.xyz`);
+            console.log(`Successfully uploaded 128x128 thumbnail for gist ${gistId}`);
+            return true;
+            
+        } catch (error) {
+            console.error('Error uploading to lygia.xyz:', error);
+            this.logToConsole(`Error uploading thumbnail: ${error.message}`, true);
+            return false;
+        }
+    }
+
     setupResizeObserver() {
         const wrapper = document.getElementById('wrapper');
         if (wrapper) {

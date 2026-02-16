@@ -185,6 +185,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 const newUrl = window.location.protocol + "//" + window.location.host + 
                                window.location.pathname + '?gist=' + id;
                 window.history.pushState({path:newUrl},'',newUrl);
+                
+                // Upload canvas thumbnail to lygia.xyz
+                await ui.uploadCanvasToLygia(id);
             } catch (err) {
                 ui.logToConsole(err.message, true);
             }
