@@ -155,7 +155,7 @@ export class GitHubIntegration {
             const firstAuthor = this.currentGistAuthors.first;
             const firstUrl = firstAuthor.blog || firstAuthor.html_url;
             const firstGistUrl = `${window.location.origin}${window.location.pathname}?gist=${this.currentGistAuthors.firstGistId}`;
-            html += `,<br />based on <a href="${firstGistUrl}" target="_blank" class="author-link">this shader </a>`;
+            html += `,<br />based on <a href="${firstGistUrl}" target="_blank" class="author-link">this other shader </a>`;
             html += `by <a href="${firstUrl}" target="_blank" class="author-link">`;
             html += `<img src="${firstAuthor.avatar_url}" class="author-avatar" alt="${firstAuthor.name}" />`;
             html += `</a>`;
@@ -325,7 +325,7 @@ export class GitHubIntegration {
         files[filename] = { content: contentString };
 
         const data = {
-            description: "glslViewer Shader: " + filename.replace('.json', ''),
+            description: filename.replace('.json', ''),
             public: true,
             files: files
         };
